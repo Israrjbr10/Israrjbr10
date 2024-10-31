@@ -1,4 +1,4 @@
-- 👋 Hi, I’m @Israrjbr10
+- 👋 Hi, I’m @IsrarHussain
 - 👀 I’m proficient back-end developer, ML developer and Database
 - 🌱 I’m currently learning Gen AL
 - 💞️ I’m looking to collaborate on relates to mention fields.
