@@ -13,6 +13,10 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, Normalizer, LabelEncoder, OneHotEncoder
 from sklearn.metrics import classification_report, accuracy_score, roc_auc_score, confusion_matrix
 from sklearn.decomposition import PCA
+from sklearn.neighbors import NearestNeighbors, LocalOutlierFactor
+from sklearn.cluster import DBSCAN, AgglomerativeClustering
+from sklearn.ensemble import IsolationForest
+from sklearn.svm import OneClassSVM
 from sklearn.impute import SimpleImputer, KNNImputer
 from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import SelectKBest, f_classif
@@ -48,48 +52,79 @@ def generate_report(llm, insights):
     report = llm.invoke(prompt)
     return report
 
-import pandas as pd
-
-def clean_non_numeric_data(data):
-    """Clean a DataFrame by removing non-numeric characters from columns where possible and converting them to appropriate numeric types."""
+def clean_non_numeric_data(data, columns):
+    """Clean a DataFrame by removing non-numeric characters from selected columns and converting them to appropriate numeric types."""
     
     # Create a copy of the data to avoid modifying the original DataFrame
     data_cleaned = data.copy()
     
-    for column in data_cleaned.columns:
-        
-        # Handle object-type columns specifically for non-numeric characters
-        if data_cleaned[column].dtype == 'object':
-            # Remove non-numeric characters, keep only digits (0-9) and minus sign (-)
-            cleaned_column = data_cleaned[column].str.replace(r'[^0-9.-]', '', regex=True)
+    # Iterate over the specified columns
+    for column in columns:
+        if column in data_cleaned.columns:
+            if data_cleaned[column].dtype == 'object':
+                # Remove non-numeric characters, keep only digits (0-9), minus sign (-), and decimal point (.)
+                cleaned_column = data_cleaned[column].str.replace(r'[^0-9.-]', '', regex=True)
+                
+                # Convert to numeric (coerce errors to NaN where conversion fails)
+                data_cleaned[column] = pd.to_numeric(cleaned_column, errors='coerce')
             
-            # Convert to numeric (coerce errors to NaN where conversion fails)
-            data_cleaned[column] = pd.to_numeric(cleaned_column, errors='coerce')
-        
-        # Handle columns that are numeric but may contain strings like 'NaN' or 'inf'
-        elif pd.api.types.is_numeric_dtype(data_cleaned[column]):
-            # Convert known strings to NaN if present
-            data_cleaned[column] = pd.to_numeric(data_cleaned[column], errors='coerce')
-        
-        # Optionally, handle more column types as needed (e.g., dates)
-        # For date columns, you might use `pd.to_datetime()` with `errors='coerce'`.
+            elif pd.api.types.is_numeric_dtype(data_cleaned[column]):
+                # Ensure numeric conversion for known issues like 'NaN' or 'inf'
+                data_cleaned[column] = pd.to_numeric(data_cleaned[column], errors='coerce')
+        else:
+            print(f"Column '{column}' not found in the DataFrame.")
     
     return data_cleaned
 
+# Function to remove outliers using Z-Score
+def remove_outliers_zscore(data, threshold=3):
+    z_scores = np.abs((data - data.mean()) / data.std())
+    return data[(z_scores < threshold).all(axis=1)]
 
-#def clean_numeric_columns(data):
-    """Clean all columns in the DataFrame that can be converted to numeric."""
-    for column in data.select_dtypes(include=['object']):  # Iterate over object (string) columns
-        # Clean the column
-        cleaned_column = (
-            data[column]
-            .str.replace('K', '', regex=False)  # Remove 'K'
-            .str.replace('−', '-', regex=False)  # Replace special minus
-            .str.replace(' ', '', regex=False)  # Remove spaces
-        )
-        # Convert to numeric, coercing errors to NaN
-        data[column] = pd.to_numeric(cleaned_column, errors='coerce')
-    return data
+# Function to remove outliers using IQR
+def remove_outliers_iqr(data, k=1.5):
+    Q1 = data.quantile(0.25)
+    Q3 = data.quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - k * IQR
+    upper_bound = Q3 + k * IQR
+    return data[(data >= lower_bound) & (data <= upper_bound)]
+
+# Function to remove outliers using KNN
+def remove_outliers_knn(data, k=3, threshold=1.5):
+    nbrs = NearestNeighbors(n_neighbors=k).fit(data)
+    distances, _ = nbrs.kneighbors(data)
+    mean_distance = np.mean(distances[:, -1])  # Distance to the k-th neighbor
+    return data[distances[:, -1] <= threshold * mean_distance]
+
+# Function to remove outliers using LOF
+def remove_outliers_lof(data, n_neighbors=20):
+    lof = LocalOutlierFactor(n_neighbors=n_neighbors)
+    return data[lof.fit_predict(data) != -1]
+
+# Function to remove outliers using DBSCAN
+def remove_outliers_dbscan(data, eps=0.5, min_samples=5):
+    db = DBSCAN(eps=eps, min_samples=min_samples)
+    labels = db.fit_predict(data)
+    return data[labels != -1]
+
+# Function to remove outliers using Hierarchical Clustering
+def remove_outliers_hierarchical(data, threshold=1):
+    clustering = AgglomerativeClustering(n_clusters=None, distance_threshold=threshold)
+    labels = clustering.fit_predict(data)
+    unique, counts = np.unique(labels, return_counts=True)
+    small_clusters = unique[counts == 1]
+    return data[np.isin(labels, small_clusters) == False]
+
+# Function to remove outliers using Isolation Forest
+def remove_outliers_isolation_forest(data, contamination=0.1):
+    iso_forest = IsolationForest(contamination=contamination)
+    return data[iso_forest.fit_predict(data) == 1]
+
+# Function to remove outliers using One-Class SVM
+def remove_outliers_ocsvm(data, nu=0.1):
+    ocsvm = OneClassSVM(nu=nu)
+    return data[ocsvm.fit_predict(data) == 1]
 
 # Function to create downloadable text file
 def create_downloadable_report(report):
@@ -129,41 +164,139 @@ if uploaded_file is not None:
                 original_shape = data.shape
                 st.write(f"Original dataset shape: {original_shape}")
                 
-                # Data Cleaning Options
+            # Data type conversion
+                st.sidebar.subheader("🔄 Data Type Conversion")
+                # Loop over each column and create an expander for each
+                for column in data.columns:
+                    with st.sidebar.expander(f"Convert {column} to", expanded=False):
+                        # Dropdown for data type conversion for each column
+                        new_dtype = st.selectbox(
+                            f"Select data type for {column}",
+                            options=["No change", "Integer", "Float", "Category", "Object"],
+                            index=0
+                        )
+                        
+                        # Apply the selected data type conversion
+                        if new_dtype == "Integer":
+                            data[column] = data[column].astype(int, errors="ignore")
+                            st.write(f"Converted {column} to Integer.")
+                        elif new_dtype == "Float":
+                            data[column] = data[column].astype(float, errors="ignore")
+                            st.write(f"Converted {column} to Float.")
+                        elif new_dtype == "Category":
+                            data[column] = data[column].astype("category")
+                            st.write(f"Converted {column} to Category.")
+                        elif new_dtype == "Object":
+                            data[column] = data[column].astype(str)
+                            st.write(f"Converted {column} to Object.")
+
+            # Data Cleaning Options
                 st.sidebar.subheader("🧹 Data Cleaning Options")
                 missing_value_method = st.sidebar.selectbox(
                     "Choose missing value handling method:", 
-                    ["None", "Clean Numeric column", "Drop Rows", "Simple Imputer (Mean)", "KNN Imputer"]
+                    ["None", "Clean Non-Numeric column", "Simple Imputer (Mean)", "KNN Imputer",
+                    "Drop Missing Rows", "Mean Imputation", "Median Imputation", "Mode Imputation", "Forward Fill", "Backward Fill"]
                 )
-                if missing_value_method=="Clean Numeric column":
-                    data_before=data.shape      
-                    # Clean all numeric columns
-                    data = clean_non_numeric_data(data)
-                    st.success("Cleaned all numeric columns.")
 
 
-                if missing_value_method == "Drop Rows":
-                    data_before = data.shape
-                    data = data.dropna()
-                    st.sidebar.success(f"Dropped rows with missing values. New shape: {data.shape}")
-                
+                if missing_value_method == "Clean Non-Numeric column":
+                    
+                    # Allow the user to select columns to clean non-numeric data
+                    columns_to_clean = st.sidebar.multiselect(
+                        "Select columns to clean non-numeric data:",
+                        options=data.columns,
+                        default=[]  # Start with no columns selected
+                    )
+
+                    # Check if any columns are selected
+                    if columns_to_clean:
+                        if st.sidebar.button("Clean Selected Columns"):
+                            # Clean the selected columns
+                            data = clean_non_numeric_data(data,columns_to_clean)
+                            st.success(f"Cleaned non-numeric data from columns: {', '.join(columns_to_clean)}")
+
+                    else:
+                        st.sidebar.write("No columns selected for cleaning.")
+
+
                 elif missing_value_method == "Simple Imputer (Mean)":
                     imputer = SimpleImputer(strategy='mean')
                     data[:] = imputer.fit_transform(data)
                     st.sidebar.success("Applied Simple Imputer (Mean).")
-                
+
                 elif missing_value_method == "KNN Imputer":
                     imputer = KNNImputer(n_neighbors=3)
                     data[:] = imputer.fit_transform(data)
                     st.sidebar.success("Applied KNN Imputer.")
 
-                # Outlier Detection
+                elif missing_value_method == "Drop Missing Rows":
+                    data = data.dropna()
+                    st.sidebar.success("Dropped all rows with missing values.")
+
+                elif missing_value_method == "Mean Imputation":
+                    data = data.fillna(data.mean())
+                    st.sidebar.success("Filled missing values with column mean.")
+
+                elif missing_value_method == "Median Imputation":
+                    data = data.fillna(data.median())
+                    st.sidebar.success("Filled missing values with column median.")
+
+                elif missing_value_method == "Mode Imputation":
+                    data = data.fillna(data.mode().iloc[0])
+                    st.sidebar.success("Filled missing values with column mode.")
+
+                elif missing_value_method == "Forward Fill":
+                    data = data.fillna(method='ffill')
+                    st.sidebar.success("Applied forward fill for missing values.")
+
+                elif missing_value_method == "Backward Fill":
+                    data = data.fillna(method='bfill')
+                    st.sidebar.success("Applied backward fill for missing values.")
+
+            # Sidebar section for outlier detection
                 st.sidebar.subheader("🔍 Outlier Detection")
-                if st.sidebar.checkbox("Remove Outliers (Z-Score Method)"):
-                    z_scores = np.abs((data - data.mean()) / data.std())
-                    data = data[(z_scores < 3).all(axis=1)]
+
+                # Selectbox to choose an outlier detection method
+                outlier_method = st.sidebar.selectbox(
+                    "Choose an outlier removal method:",
+                    ["None", "Z-Score Method", "IQR Method", "KNN Method", "LOF Method", 
+                    "DBSCAN Method", "Hierarchical Clustering Method", "Isolation Forest Method", "One-Class SVM Method"]
+                )
+
+                # Apply the selected outlier removal method
+                if outlier_method == "Z-Score Method":
+                    data = remove_outliers_zscore(data)
                     st.sidebar.success("Removed outliers using Z-Score method.")
 
+                elif outlier_method == "IQR Method":
+                    data = remove_outliers_iqr(data)
+                    st.sidebar.success("Removed outliers using IQR method.")
+
+                elif outlier_method == "KNN Method":
+                    data = remove_outliers_knn(data)
+                    st.sidebar.success("Removed outliers using KNN method.")
+
+                elif outlier_method == "LOF Method":
+                    data = remove_outliers_lof(data)
+                    st.sidebar.success("Removed outliers using LOF method.")
+
+                elif outlier_method == "DBSCAN Method":
+                    data = remove_outliers_dbscan(data)
+                    st.sidebar.success("Removed outliers using DBSCAN method.")
+
+                elif outlier_method == "Hierarchical Clustering Method":
+                    data = remove_outliers_hierarchical(data)
+                    st.sidebar.success("Removed outliers using Hierarchical Clustering method.")
+
+                elif outlier_method == "Isolation Forest Method":
+                    data = remove_outliers_isolation_forest(data)
+                    st.sidebar.success("Removed outliers using Isolation Forest method.")
+
+                elif outlier_method == "One-Class SVM Method":
+                    data = remove_outliers_ocsvm(data)
+                    st.sidebar.success("Removed outliers using One-Class SVM method.")
+
+                
                 if st.sidebar.checkbox("Drop duplicate rows"):
                     data_before = data.shape
                     data = data.drop_duplicates()
@@ -172,18 +305,32 @@ if uploaded_file is not None:
 
                 # New Preprocessing Techniques
                 st.sidebar.subheader("🔧 Additional Preprocessing Options")
-                if st.sidebar.checkbox("Label Encode Categorical Columns"):
-                    label_encoders = {}
-                    for column in data.select_dtypes(include=['object']).columns:
-                        le = LabelEncoder()
-                        data[column] = le.fit_transform(data[column])
-                        label_encoders[column] = le
-                    st.sidebar.success("Categorical columns have been label encoded.")
-                
-                if st.sidebar.checkbox("One-Hot Encode Categorical Columns"):
-                    data = pd.get_dummies(data)
-                    st.sidebar.success("Categorical columns have been one-hot encoded.")
-                
+                # Encoding categorical variables
+                st.sidebar.subheader("Encoding Options")
+                encoding_option = st.sidebar.selectbox(
+                    "Choose a method for encoding categorical data",
+                    ["None", "Label Encoding", "One-Hot Encoding"])
+
+                if encoding_option != "None":
+                    if encoding_option == "Label Encoding":
+                        label_enc = LabelEncoder()
+                        for col in data.select_dtypes(include=['object']):
+                            data[col] = label_enc.fit_transform(data[col])
+                    elif encoding_option == "One-Hot Encoding":
+                                    data = pd.get_dummies(data, drop_first=True)
+            # Feature selection
+                st.sidebar.subheader("Feature Selection")
+                feature_selection = st.sidebar.checkbox("Perform Feature Selection")
+
+                if feature_selection:
+                    X = data.dropna().select_dtypes(include=[np.number])
+                    y = data.select_dtypes(exclude=[np.number]).iloc[:, 0]
+                    selector = SelectKBest(score_func=f_classif, k="all")
+                    X_selected = selector.fit_transform(X, y)
+                    st.write("### Feature Importance Scores")
+                    feature_scores = pd.DataFrame({'Feature': X.columns, 'Score': selector.scores_})
+                    st.write(feature_scores.sort_values(by='Score', ascending=False)) 
+                                  
                 if st.sidebar.checkbox("Apply PCA"):
                     n_components = st.sidebar.slider("Select number of components for PCA:", 1, min(data.shape[1], 10), 2)
                     pca = PCA(n_components=n_components)
@@ -191,27 +338,16 @@ if uploaded_file is not None:
                     data = pd.DataFrame(data_pca, columns=[f"PC{i+1}" for i in range(n_components)])
                     st.sidebar.success("PCA has been applied.")
                     st.write(f"Shape after PCA: {data.shape}")
-
-                # Data Type Conversion Option
-                st.sidebar.subheader("🔄 Data Type Conversion")
-                for column in data.columns:
-                    new_dtype = st.sidebar.selectbox(f"Convert {column} to:", options=["No change", "Integer", "Float", "Category", "Object"], index=0)
-                    if new_dtype == "Integer":
-                        data[column] = data[column].astype(int)
-                    elif new_dtype == "Float":
-                        data[column] = data[column].astype(float)
-                    elif new_dtype == "Category":
-                        data[column] = data[column].astype('category')
-                    elif new_dtype == "Object":
-                        data[column] = data[column].astype(str)
-
-                # Display DataFrame preview in the center
+                    
+                    
+            
+                # Display DataFrame preview in the center and adjust to the screen dynamically
                 st.subheader("👀 Data Preview:")
-                st.write(data.head())
+                st.dataframe(data)  # Automatically adjusts to the screen size
 
                 # Show basic statistics
                 st.subheader("📊 Basic Statistics:")
-                st.write(data.describe())
+                st.dataframe(data.describe())
 
                 # Graphical Insights Section
                 st.subheader("📊 Graphical Insights")
@@ -302,8 +438,17 @@ if uploaded_file is not None:
 
                 # Display basic data insights
                 st.subheader("📋 Basic Data Insights")
-                insights = generate_basic_insights(data)
+                # Assuming you have a function to generate basic insights
+                # Here, I use a placeholder for the insights
+                insights = {
+                    "Number of Rows": len(data),
+                    "Number of Columns": len(data.columns),
+                    "Missing Values": data.isnull().sum().to_dict(),
+                    "Data Types": data.dtypes.to_dict()
+                }
+
                 st.json(insights)
+
 
                 # Feature Engineering: Feature Selection
                 st.sidebar.subheader("📊 Feature Selection")
