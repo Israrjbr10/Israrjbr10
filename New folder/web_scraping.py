@@ -3,6 +3,9 @@ import requests
 from bs4 import BeautifulSoup
 import sqlite3
 from datetime import datetime
+import pandas as pd
+import os
+print(os.getcwd()) 
 
 # Define Yahoo Finance URL for the index (e.g., S&P 500)
 YAHOO_FINANCE_URL = "https://finance.yahoo.com/markets/stocks/most-active/"
@@ -54,6 +57,28 @@ def insert_data(data):
     conn.commit()
     conn.close()
 
+def convert_to_csv(data):
+    # Convert the data to a CSV string
+    csv_string = "price,change,percent_change,timestamp\n"  
+    for row in data:
+        csv_string += f"{row['price']},{row['change']},{row['percent_change']},{row['timestamp']}\n"
+        return csv_string
+    
+ #write a code for csv show
+import csv  # Make sure to import the csv module at the beginning of your script
+
+def write_to_csv(data):    
+    with open('market_index.csv', 'w', newline='') as csvfile:  # 'newline' parameter helps avoid extra blank lines on Windows
+        writer = csv.writer(csvfile)
+        writer.writerow(["price", "change", "percent_change", "timestamp"])
+        for row in data:
+            writer.writerow([row['price'], row['change'], row['percent_change'], row['timestamp']])
+                 
+    write_to_csv([data])                                                                                  
+                                                                                
+                                                                                      
+                                                                                      
+
 # Main script
 def main():
     setup_database()
@@ -63,6 +88,10 @@ def main():
         print("Data inserted into the database successfully:", data)
     else:
         print("Failed to fetch data.")
+       
+    print(write_to_csv[data])   
+        
+
 
 if __name__ == "__main__":
     main()
